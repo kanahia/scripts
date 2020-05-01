@@ -1,0 +1,9 @@
+ln -s /home/jason/data_pace/raw_data_pace* .
+for f in *R1*; do
+  fastq2fasta.py $f | gzip > ${f%.fastq.gz}.fasta.gz
+done
+# get fasta from https://www.ncbi.nlm.nih.gov/nuccore/U55761.1?report=fasta
+makeblastdb -in pEGFP-1.fasta -dbtype nucl
+for fasta in *fasta; do
+  blastn -query ${fasta} -db pEGFP-1.fasta -out ${fasta%.fasta}.blastn.out -outfmt "6 qseqid evalue" -max_hsps 1
+done
