@@ -1,0 +1,913 @@
+---
+title: "GWAS_et31"
+author: "kanahia"
+date: "10/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(root.dir = "/home/jason/data/ET31_48_72/GWAS_2020/")
+getwd()
+
+```
+# Packages
+```{r}
+library("org.Dr.eg.db")
+library("dplyr")
+library("biomaRt")
+library("readxl")
+library("ggplot2")
+library("cowplot")
+#library("VarfromPDB")
+library("tidyverse")
+library("openxlsx")
+```
+
+# Read DESEq2 output files
+```{r}
+# ET31 48h pos vs 48h neg
+full_et31_48_pos_neg <-
+  read.delim2(
+  "/home/jason/data/data_pace/raw_data_pace/et31_48hpf_raw/R_et31_48hpf/final_data/full_et31_48_pos_neg.csv",
+  stringsAsFactors = FALSE
+  ) 
+
+# ET31 72h pos vs 72h neg
+full_et31_72pos_72neg <-
+  read.delim2(
+  "/home/jason/data/data_pace/raw_data_pace/et31_48hpf_raw/R_et31_48hpf/final_data/full_et31_72pos_72neg.csv",
+  stringsAsFactors = FALSE)
+
+# ET31 72h pos vs 48h pos
+full_et31_72pos_48pos <-
+  read.delim2(
+  "/home/jason/data/data_pace/raw_data_pace/et31_48hpf_raw/R_et31_48hpf/final_data/full_et31_72pos_48pos.csv",
+  stringsAsFactors = FALSE
+  )
+
+GWAS_CVD <- readxl::read_xlsx("/home/jason/data/ET31_48_72/GWAS_2020/GWAS_cardiovascular_disease.xlsx")
+
+ClinVar_cardiac_condcution <- readxl::read_xlsx("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar_cardiac_conduction.xlsx")
+
+ClinVar_AV_block <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_AVblock.txt")
+ClinVar_arrhytmia <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_arrhythmia.txt")
+ClinVar_longQT <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_longQTsyndrome.txt")
+ClinVar_TricuspidValve <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_tricuspid_valve.txt") 
+ClinVar_AV_valve <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_AV_valve.txt") 
+ClinVar_mitral <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_mitral_valve.txt") 
+ClinVar_valve <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_Valve.txt") 
+ClinVar_septa <- read.delim2("/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/clinvar_result_septal_defects.txt") 
+```
+
+## Data preparation
+```{r}
+col_names_1 <- sub("X", "", colnames(full_et31_48_pos_neg))
+colnames(full_et31_48_pos_neg) <- col_names_1
+
+col_names_2 <- sub("X", "", colnames(full_et31_72pos_72neg))
+colnames(full_et31_72pos_72neg) <- col_names_2
+
+col_names_3 <- sub("X", "", colnames(full_et31_72pos_48pos))
+colnames(full_et31_72pos_48pos) <- col_names_3
+
+```
+
+# Get ZF homologs
+```{r}
+#ensembl <- useMart("ensembl")
+#datasets <- listDatasets(ensembl)
+#listDatasets(ensembl)
+human <- useMart(host = "www.ensembl.org",
+                 biomart = "ensembl", 
+                 dataset = "hsapiens_gene_ensembl")
+
+zebrafish <- useMart(host = "www.ensembl.org",
+                     biomart = "ensembl", 
+                     dataset = "drerio_gene_ensembl")
+
+GWAS_biomart <- getLDS(
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  filters = "external_gene_name",
+  values = GWAS_CVD$MAPPED_GENE,
+  mart = human,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_biomart <- getLDS(
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  filters = "external_gene_name",
+  values = ClinVar_cardiac_condcution$`Gene(s)`,
+  mart = human,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+```
+# ClinVar
+```{r}
+ClinVar_et31 <-
+  dplyr::left_join(
+    ClinVar_biomart %>% dplyr::select(1,3,4),
+    ClinVar_cardiac_condcution %>% dplyr::select(2,3,4),
+    by = c("Gene.name" = "Gene(s)"))
+
+ClinVar_et31_final <-
+  dplyr::left_join(
+    ClinVar_et31 %>% dplyr::select(-1),
+    full_et31_72pos_72neg %>% dplyr::filter(padj < 0.05, log2FoldChange > 0),
+    by = c("Gene.name.1" = "external_gene_name"))
+ 
+
+ClinVar_et31_clean <-
+separate_rows(
+  data = ClinVar_et31_final, 
+  `Condition(s)`, 
+  sep = "\\|"
+  ) %>% 
+  filter(
+    ! duplicated(paste0(Gene.name.1, `Condition(s)`)),
+    ! is.na(log2FoldChange),
+    .$`Condition(s)` != "not provided",
+    .$`Condition(s)` !="not specified"
+  ) 
+
+ClinVar_et31_clean %>% 
+  group_by(`Condition(s)`) %>% 
+  summarise(count = n()) %>%
+  dplyr::arrange(desc(count))
+
+```
+
+```{r}
+ClinVar_et31_clean %>% 
+  group_by(Gene.name.1) %>% 
+  top_n(n = 5, 
+        wt = log2FoldChange)
+```
+
+#AV block
+
+```{r}
+ClinVar_AV_block_sep <- 
+  ClinVar_AV_block %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(Condition.s.) %>% dplyr::select(4,2) %>%
+  .[-1, ]
+
+biomart_AV_block <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_AV_block_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_AV_block_zf_72h <-
+  left_join(biomart_AV_block, ClinVar_AV_block_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_AV_block_zf_48h <-
+  left_join(biomart_AV_block, ClinVar_AV_block_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_AV_block_zf_72h$Gene.stable.ID.1))
+
+ClinVar_AV_block_zf_72h[!duplicated(ClinVar_AV_block_zf_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+```
+# arrhythmia
+```{r}
+ClinVar_arrhythmia_sep <- 
+  ClinVar_arrhytmia %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(Condition.s.) %>% dplyr::select(4,2)
+
+biomart_arrhythmia <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_arrhythmia_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_arrhythmia_72h <-
+  left_join(biomart_arrhythmia, ClinVar_arrhythmia_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_arrhythmia_48h <-
+  left_join(biomart_arrhythmia, ClinVar_arrhythmia_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_arrhythmia_72h$Gene.stable.ID.1))
+
+ClinVar_arrhythmia_72h[!duplicated(ClinVar_arrhythmia_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+# long QT syndrome
+```{r}
+ClinVar_longQT_sep <- 
+  ClinVar_longQT %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(Condition.s.) %>% dplyr::select(4,2)
+
+biomart_longQT <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_longQT_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_longQT_72h <-
+  left_join(biomart_longQT, ClinVar_longQT_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_longQT_48h <-
+  left_join(biomart_longQT, ClinVar_longQT_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_longQT_72h$Gene.stable.ID.1))
+
+ClinVar_longQT_72h[!duplicated(ClinVar_longQT_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+
+# ClinVar_cardiac_condcution
+```{r}
+ClinVar_condcution_sep <- 
+  ClinVar_cardiac_condcution %>%
+  separate_rows(`Gene(s)`) %>%
+  group_by(`Condition(s)`) %>% dplyr::select(3,2)
+
+biomart_conduction <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_condcution_sep$`Gene(s)`,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_conduction_72h <-
+  left_join(biomart_conduction, ClinVar_condcution_sep, by = c("Gene.name" = "Gene(s)")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_conduction_48h <-
+  left_join(biomart_conduction, ClinVar_condcution_sep, by = c("Gene.name" = "Gene(s)")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_conduction_72h$Gene.stable.ID.1))
+
+ClinVar_conduction_72h[!duplicated(ClinVar_conduction_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+
+# ClinVar_tricuspid valve
+```{r}
+ClinVar_TricuspidValve_sep <- 
+  ClinVar_TricuspidValve %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(`Condition.s.`) %>% dplyr::select(3,2)
+
+biomart_TriValve <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_TricuspidValve$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_TriValve_72h <-
+  left_join(biomart_TriValve, ClinVar_TricuspidValve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_TriValve_48h <-
+  left_join(biomart_TriValve, ClinVar_TricuspidValve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_TriValve_72h$Gene.stable.ID.1))
+
+ClinVar_TriValve_72h[!duplicated(ClinVar_TriValve_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+
+# ClinVar_AV_valve
+```{r}
+ClinVar_AV_valve_sep <- 
+  ClinVar_AV_valve %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(`Condition.s.`) %>% dplyr::select(3,2)
+
+biomart_AV_valve <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_AV_valve_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_AV_valve_72h <-
+  left_join(biomart_AV_valve, ClinVar_AV_valve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_AV_valve_48h <-
+  left_join(biomart_AV_valve, ClinVar_AV_valve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_AV_valve_72h$Gene.stable.ID.1))
+
+ClinVar_AV_valve_72h[!duplicated(ClinVar_AV_valve_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+# ClinVar_mitral_valve
+```{r}
+ClinVar_mitral_sep <- 
+  ClinVar_mitral %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(`Condition.s.`) %>% dplyr::select(3,2)
+
+biomart_mitral <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_mitral_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_mitral_72h <-
+  left_join(biomart_mitral, ClinVar_mitral_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_mitral_48h <-
+  left_join(biomart_mitral, ClinVar_mitral_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_mitral_72h$Gene.stable.ID.1))
+sum(!duplicated(ClinVar_mitral_48h$Gene.stable.ID.1))
+
+ClinVar_mitral_72h[!duplicated(ClinVar_mitral_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+ClinVar_mitral_48h[!duplicated(ClinVar_mitral_48h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+# ClinVar_valve
+```{r}
+ClinVar_valve_sep <- 
+  ClinVar_valve %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(`Condition.s.`) %>% dplyr::select(3,2)
+
+biomart_valve <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_valve_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+ClinVar_valve_72h <-
+  left_join(biomart_valve, ClinVar_valve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_valve_48h <-
+  left_join(biomart_valve, ClinVar_valve_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_valve_48h$Gene.stable.ID.1))
+sum(!duplicated(ClinVar_valve_72h$Gene.stable.ID.1))
+
+ClinVar_valve_72h[!duplicated(ClinVar_valve_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+ClinVar_valve_48h[!duplicated(ClinVar_valve_48h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+# ClinVar_septal_defects
+```{r}
+ClinVar_septa_sep <- 
+  ClinVar_septa %>%
+  separate_rows(`Gene.s.`) %>%
+  group_by(`Condition.s.`) %>% dplyr::select(3,2)
+
+biomart_septa <- 
+  getLDS(
+  mart = human,
+  filters = "external_gene_name",
+  attributes = c("external_gene_name", "ensembl_gene_id"),
+  values = ClinVar_septa_sep$Gene.s.,
+  attributesL = c("external_gene_name", "ensembl_gene_id"),
+  martL = zebrafish
+  )
+
+
+ClinVar_septa_72h <-
+  left_join(biomart_septa, ClinVar_septa_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_72pos_72neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+ClinVar_septa_48h <-
+  left_join(biomart_septa, ClinVar_septa_sep, by = c("Gene.name" = "Gene.s.")) %>%
+  dplyr::select(4,5) %>%
+  dplyr::left_join(., full_et31_48_pos_neg, by = c("Gene.stable.ID.1" = "Name")) %>%
+  dplyr::filter(padj < 0.05 & log2FoldChange > 0)
+
+sum(!duplicated(ClinVar_septa_48h$Gene.stable.ID.1))
+sum(!duplicated(ClinVar_septa_72h$Gene.stable.ID.1))
+
+ClinVar_septa_72h[!duplicated(ClinVar_septa_72h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+ClinVar_septa_48h[!duplicated(ClinVar_septa_48h$Gene.stable.ID.1), c(5, 7)] %>% dplyr::arrange(desc(log2FoldChange))
+
+```
+
+# 48 hpf
+```{r}
+# Arrhytmia
+clean_arrhythmia_48h <-
+  ClinVar_arrhythmia_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Arrhythmia")
+
+  clean_arrhythmia_48h <- 
+    unique(setDT(clean_arrhythmia_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+
+# AV block
+clean_AV_block_48h <-
+  ClinVar_AV_block_zf_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "AV block")
+
+  clean_AV_block_48h <- 
+    unique(setDT(clean_AV_block_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+
+# long QT syndrome    
+clean_longQT_48h <-
+  ClinVar_longQT_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Long QT syndrome")
+
+  clean_longQT_48h <- 
+    unique(setDT(clean_longQT_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))  
+
+# conduction
+clean_conduction_48h <-
+  ClinVar_conduction_48h %>% 
+       tidyr::separate_rows(`Condition(s)`, sep = "\\|") %>%
+       dplyr::group_by(`Condition(s)`) %>% 
+       dplyr::filter(`Condition(s)` != "not specified" & `Condition(s)` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Long QT syndrome")
+
+  clean_conduction_48h <- 
+    unique(setDT(clean_conduction_48h)[order(`Condition(s)`, -external_gene_name)], by = "Condition(s)") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13)) 
+  
+  
+# Tricuspid Valve
+clean_TriValve_48h <-
+  ClinVar_TriValve_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Tricuspid Valve")
+
+  clean_TriValve_48h <- 
+    unique(setDT(clean_TriValve_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+  
+# AV Valve
+clean_AV_valve_48h <-
+  ClinVar_AV_valve_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "AV Valve")
+
+  clean_AV_valve_48h <- 
+    unique(setDT(clean_AV_valve_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))  
+  
+# Mitral Valve
+clean_mitral_48h <-
+  ClinVar_mitral_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Mitral valve")
+
+  clean_mitral_48h <- 
+    unique(setDT(clean_mitral_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+  
+
+# Valve
+clean_valve_48h <-
+  ClinVar_valve_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Valve")
+
+  clean_valve_48h <- 
+    unique(setDT(clean_valve_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))      
+  
+
+# Septa defects
+clean_septa_48h <-
+  ClinVar_septa_48h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Septal defects")
+
+  clean_septa_48h <- 
+    unique(setDT(clean_septa_48h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))   
+  
+  clean_septa_48h$external_gene_name[which(clean_septa_48h$external_gene_name == "zgc:86709")] <- "actc2"    
+
+```
+
+# 72 hpf
+```{r}
+# Arrhytmia
+clean_arrhythmia <-
+  ClinVar_arrhythmia_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Arrhythmia")
+
+  clean_arrhythmia <- 
+    unique(setDT(clean_arrhythmia)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+
+# AV block
+clean_AV_block <-
+  ClinVar_AV_block_zf_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "AV block")
+
+  clean_AV_block <- 
+    unique(setDT(clean_AV_block)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+
+# long QT syndrome    
+clean_longQT <-
+  ClinVar_longQT_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Long QT syndrome")
+
+  clean_longQT <- 
+    unique(setDT(clean_longQT)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))  
+
+# conduction
+clean_conduction <-
+  ClinVar_conduction_72h %>% 
+       tidyr::separate_rows(`Condition(s)`, sep = "\\|") %>%
+       dplyr::group_by(`Condition(s)`) %>% 
+       dplyr::filter(`Condition(s)` != "not specified" & `Condition(s)` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Long QT syndrome")
+
+  clean_conduction <- 
+    unique(setDT(clean_conduction)[order(`Condition(s)`, -external_gene_name)], by = "Condition(s)") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13)) 
+  
+# Tricuspid valve
+  
+clean_TriValve_72h <-
+  ClinVar_TriValve_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Tricuspid Valve")
+
+  clean_TriValve_72h <- 
+    unique(setDT(clean_TriValve_72h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+  
+# AV valve  
+clean_AV_valve_72h <-
+  ClinVar_AV_valve_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "AV Valve")
+
+  clean_AV_valve_72h <- 
+    unique(setDT(clean_AV_valve_72h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))    
+  
+# Mitral Valve
+clean_mitral_72h <-
+  ClinVar_mitral_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Mitral valve")
+
+  clean_mitral_72h <- 
+    unique(setDT(clean_mitral_72h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))
+  
+# Valve
+clean_valve_72h <-
+  ClinVar_valve_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Valve")
+
+  clean_valve_72h <- 
+    unique(setDT(clean_valve_72h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))  
+  
+# Septal defects
+clean_septa_72h <-
+  ClinVar_septa_72h %>% 
+       tidyr::separate_rows(`Condition.s.`, sep = "\\|") %>%
+       dplyr::group_by(`Condition.s.`) %>% 
+       dplyr::filter(`Condition.s.` != "not specified" & `Condition.s.` != "not provided") %>%
+       dplyr::mutate(ClinVar_term = "Septal defects")
+
+  clean_septa_72h <- 
+    unique(setDT(clean_septa_72h)[order(`Condition.s.`, -external_gene_name)], by = "Condition.s.") %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    dplyr::select(c(1, 2, 26, 5, 7, 11, 12, 13))   
+  
+clean_septa_72h$external_gene_name[which(clean_septa_72h$external_gene_name == "zgc:86709")] <- "actc2"  
+  
+  
+```
+
+
+```{r}
+# library("tidyverse")
+# library("openxlsx")
+
+GWAS_list_48h <- list(clean_arrhythmia_48h,
+                    clean_AV_block_48h,
+                    clean_conduction_48h,
+                    clean_longQT_48h)
+
+names(GWAS_list_48h) <- c("Arrhythmia", "AV block", "Conduction", "Long QT syndrome")
+
+GWAS_list_72h <- list(clean_arrhythmia,
+                    clean_AV_block,
+                    clean_conduction,
+                    clean_longQT)
+
+
+names(GWAS_list_72h) <- c("Arrhythmia", "AV block", "Conduction", "Long QT syndrome")
+
+wb <- createWorkbook()
+lapply(seq_along(GWAS_list_72h), function(i){
+  addWorksheet(wb=wb, sheetName = names(GWAS_list_72h[i]))
+  writeData(wb, sheet = i, GWAS_list_72h[[i]][-length(GWAS_list_72h[[i]])])
+})
+
+
+wb_48h <- createWorkbook()
+lapply(seq_along(GWAS_list_48h), function(i){
+  addWorksheet(wb=wb_48h, sheetName = names(GWAS_list_48h[i]))
+  writeData(wb_48h, sheet = i, GWAS_list_48h[[i]][-length(GWAS_list_48h[[i]])])
+})
+#Save Workbook
+saveWorkbook(wb_48h, "/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/ClinVar_GWAS_48h.xlsx", overwrite = TRUE)
+```
+
+
+# unique terms from valve
+```{r}
+unique_valve_48h <- 
+  data.frame(
+    gene = c(
+      unique(clean_TriValve_48h$external_gene_name),
+      unique(clean_AV_valve_48h$external_gene_name),
+      unique(clean_mitral_48h$external_gene_name),
+      unique(clean_valve_48h$external_gene_name)),
+    ClinVar_term = 
+      rep(
+        c("Tricuspid valve", "AV valve", "Mitral valve", "Valve in general"), 
+        times = c(length(unique(clean_TriValve_48h$external_gene_name)),
+                  length(unique(clean_AV_valve_48h$external_gene_name)),
+                  length(unique(clean_mitral_48h$external_gene_name)),
+                  length(unique(clean_valve_48h$external_gene_name)))),
+    log2FoldChange = c(
+       unique(clean_TriValve_48h$log2FoldChange),
+       unique(clean_AV_valve_48h$log2FoldChange),
+       unique(clean_mitral_48h$log2FoldChange),
+       unique(clean_valve_48h$log2FoldChange))
+    )
+
+
+unique_valve_72h <- 
+  data.frame(
+    gene = c(
+      unique(clean_TriValve_72h$external_gene_name),
+      unique(clean_AV_valve_72h$external_gene_name),
+      unique(clean_mitral_72h$external_gene_name),
+      unique(clean_valve_72h$external_gene_name)),
+    ClinVar_term = 
+      rep(
+        c("Tricuspid valve", "AV valve", "Mitral valve", "Valve in general"), 
+        times = c(length(unique(clean_TriValve_72h$external_gene_name)),
+                  length(unique(clean_AV_valve_72h$external_gene_name)),
+                  length(unique(clean_mitral_72h$external_gene_name)),
+                  length(unique(clean_valve_72h$external_gene_name)))),
+    log2FoldChange = c(
+       unique(clean_TriValve_72h$log2FoldChange),
+       unique(clean_AV_valve_72h$log2FoldChange),
+       unique(clean_mitral_72h$log2FoldChange),
+       unique(clean_valve_72h$log2FoldChange))
+    )
+  
+```
+
+# GWAS related to valve
+```{r}
+# library("tidyverse")
+# library("openxlsx")
+
+GWAS_list_valve_48h <- 
+  list(
+    clean_TriValve_48h,
+    clean_AV_valve_48h,
+    clean_mitral_48h,
+    clean_valve_48h,
+    setDT(unique_valve_48h),
+    unique(unique_valve_48h),
+    intersect(unique_valve_48h$gene, unique_valve_72h$gene))
+
+names(GWAS_list_valve_48h) <- 
+  c("Tricuspid valve", "AV valve", "Mitral valve", "Valve in general", "Unique in each", "Unique in general", "Intersect 48vs72")
+
+GWAS_list_valve_72h <- 
+  list(
+    clean_TriValve_72h,
+    clean_AV_valve_72h,
+    clean_mitral_72h,
+    clean_valve_72h,
+    setDT(unique_valve_72h),
+    unique(unique_valve_72h),
+    intersect(unique_valve_48h$gene, unique_valve_72h$gene))
+
+names(GWAS_list_valve_72h) <- 
+  c("Tricuspid valve", "AV valve", "Mitral valve", "Valve in general", "Unique in each", "Unique in general", "Intersect 48vs72")
+
+wb_valve_48h <- createWorkbook()
+lapply(seq_along(GWAS_list_valve_48h), function(i){
+  addWorksheet(wb = wb_valve_48h, 
+               sheetName = names(GWAS_list_valve_48h[i]))
+  writeData(wb_valve_48h, 
+            sheet = i, 
+            GWAS_list_valve_48h[[i]][-length(GWAS_list_valve_48h[[i]])])
+  }
+  )
+
+
+wb_valve_72h <- createWorkbook()
+lapply(seq_along(GWAS_list_valve_72h), function(i){
+  addWorksheet(wb = wb_valve_72h, 
+               sheetName = names(GWAS_list_valve_72h[i]))
+  writeData(wb_valve_72h, 
+            sheet = i, 
+            GWAS_list_valve_72h[[i]][-length(GWAS_list_valve_72h[[i]])])
+  }
+  )
+#Save Workbook
+saveWorkbook(wb_valve_48h, "/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/ClinVar_GWAS_valve_48h.xlsx", overwrite = TRUE)
+saveWorkbook(wb_valve_72h, "/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/ClinVar_GWAS_valve_72h.xlsx", overwrite = TRUE)
+```
+
+# sepral defects
+```{r}
+# library("tidyverse")
+# library("openxlsx")
+
+GWAS_list_septal <- list(clean_septa_48h,
+                         clean_septa_72h,
+                         unique(clean_septa_48h$external_gene_name),
+                         unique(clean_septa_72h$external_gene_name),
+                         intersect(clean_septa_48h$external_gene_name, clean_septa_72h$external_gene_name))
+
+names(GWAS_list_septal) <- 
+  c("Septal_defects_48h", "Septal_defects_72h", "unique_at 48h", "unique_at_72h", "intersect48vs72h")
+
+
+wb_septa <- createWorkbook()
+lapply(seq_along(GWAS_list_septal), function(i){
+  addWorksheet(wb=wb_septa, sheetName = names(GWAS_list_septal[i]))
+  writeData(wb_septa, sheet = i, GWAS_list_septal[[i]][-length(GWAS_list_septal[[i]])])
+})
+
+#Save Workbook
+saveWorkbook(wb_septa, 
+             "/home/jason/data/ET31_48_72/GWAS_2020/ClinVar/ClinVar_GWAS_septal_defetcs_48and72h.xlsx", 
+             overwrite = TRUE)
+```
+
+```{r}
+GWAS_genes_48h <-
+  rbind(clean_arrhythmia_48h[, 4],
+        clean_AV_block_48h[, 4],
+        clean_conduction_48h[, 4],
+        clean_longQT_48h[, 4])
+
+length(unique(GWAS_genes_48h$external_gene_name))
+
+GWAS_genes_72h <-
+  rbind(clean_arrhythmia[, 4],
+        clean_AV_block[, 4],
+        clean_conduction[, 4],
+        clean_longQT[, 4])
+
+length(unique(GWAS_genes_72h$external_gene_name))
+
+length(intersect(unique(GWAS_genes_48h$external_gene_name), unique(GWAS_genes_72h$external_gene_name)))
+```
+
+
